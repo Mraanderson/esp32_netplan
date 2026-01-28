@@ -173,3 +173,17 @@ It’s ideal for homelabs, field work, or quick server bring‑ups.
 ## 📄 License
 
 MIT License — do whatever you like with it.
+
+---
+
+## Disclaimer
+
+This project is provided as-is, with no guarantees or warranties of any kind.  
+It was created as a small personal utility and shared in case others find it useful.
+
+- The tool generates netplan YAML, but you are responsible for verifying and applying it correctly on your own systems.
+- Hardware behaviour varies between ESP32 boards, especially low-cost clones. Only classic ESP32‑WROOM/WROVER USB‑serial boards are supported.
+- No Wi‑Fi or BLE functionality is used or tested.
+- Use this project at your own discretion. The author is not responsible for any configuration issues, network outages, or unexpected behaviour.
+
+If it works for you, great. If not, feel free to fork it, improve it, or adapt it to your needs.
