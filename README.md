@@ -10,6 +10,9 @@ This project exists because sometimes you’re standing in front of a machine th
 ## ✨ Features
 
 - SOS LED heartbeat (non‑blocking, toggleable via `sos on/off`)
+- **BOOT button actions:**
+  - **Short press:** toggle SOS heartbeat  
+  - **Long press:** print the full netplan YAML instantly  
 - Serial command console
 - Editable fields:
   - Interface name
@@ -74,6 +77,22 @@ Ubuntu 24.04 LTS tip:
 
 ---
 
+## 🔘 BOOT Button Controls
+
+The ESP32’s **BOOT button (GPIO0)** is fully supported:
+
+- **Short press:**  
+  Toggle the SOS heartbeat on/off  
+  (useful when the blinking gets annoying)
+
+- **Long press:**  
+  Instantly print the full netplan YAML  
+  (perfect when standing at a server with a terminal open)
+
+These actions do **not** interfere with flashing or normal operation.
+
+---
+
 ## 🧩 Example Usage
 
 ### Set your values:
@@ -130,6 +149,7 @@ sudo netplan apply
 
 - ESP32‑WROOM or ESP32‑WROVER dev board  
 - One LED on GPIO 2 (built‑in on most boards)  
+- BOOT button (GPIO0) for quick actions  
 - USB cable for serial communication  
 
 No Wi‑Fi or BLE is used — this avoids brownouts on low‑quality boards (of which I have 2).
@@ -144,6 +164,7 @@ This little tool gives you a pocket‑sized helper that:
 - blinks to show it’s alive  
 - stores your network settings  
 - prints a perfect netplan block every time  
+- responds to a physical button for quick actions  
 
 It’s ideal for homelabs, field work, or quick server bring‑ups.
 
