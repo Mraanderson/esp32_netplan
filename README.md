@@ -1,6 +1,6 @@
 # SOS Static IP Helper – Ubuntu 24.04 LTS
 
-A tiny ESP32‑based serial utility that helps you generate clean, indentation‑safe **netplan** configuration snippets for Ubuntu 24.04 LTS.  
+A tiny ESP32‑based serial utility that generates clean, indentation‑safe **netplan** configuration snippets for Ubuntu 24.04 LTS.  
 It runs a visible **SOS heartbeat** on the onboard LED so you always know the device is powered, and exposes a simple **serial control panel** for editing network parameters and printing a ready‑to‑paste YAML block.
 
 This project exists because sometimes you’re standing in front of a machine that needs a static IP *right now*, and fighting YAML spacing or remembering interface names is the last thing you want to deal with.
@@ -13,13 +13,14 @@ This project exists because sometimes you’re standing in front of a machine th
 - **BOOT button actions:**
   - **Short press:** toggle SOS heartbeat  
   - **Long press:** print the full netplan YAML instantly  
-- Serial command console
+- Serial command console with a clear built‑in help menu
 - Editable fields:
   - Interface name
   - IP address
-  - CIDR
+  - CIDR prefix
   - Gateway
   - DNS1 / DNS2
+- **Autosave:** all changes made with `set` are immediately written to NVS (with verbose confirmation)
 - Generates a valid **Ubuntu 24.04 LTS netplan** YAML snippet
 - Built‑in Linux reminders for finding the correct interface
 - No Wi‑Fi, no BLE, no brownouts — works on even the weakest ESP32 boards
@@ -75,6 +76,13 @@ Ubuntu 24.04 LTS tip:
     ip a
 ```
 
+All configuration changes are **autosaved** to NVS with a confirmation message:
+
+```
+Updated.
+Saved to NVS.
+```
+
 ---
 
 ## 🔘 BOOT Button Controls
@@ -115,17 +123,12 @@ netplan
 ### Output:
 
 ```yaml
-# Ubuntu 24.04 LTS netplan template
-# Find your interface name with: ip link show
-
 network:
   version: 2
-  renderer: networkd
   ethernets:
     enp3s0:
-      dhcp4: no
-      addresses:
-        - 192.168.10.42/24
+      dhcp4: false
+      addresses: [192.168.10.42/24]
       gateway4: 192.168.10.1
       nameservers:
         addresses: [9.9.9.9, 1.1.1.1]
@@ -152,7 +155,7 @@ sudo netplan apply
 - BOOT button (GPIO0) for quick actions  
 - USB cable for serial communication  
 
-No Wi‑Fi or BLE is used — this avoids brownouts on low‑quality boards (of which I have 2).
+No Wi‑Fi or BLE is used — this avoids brownouts on low‑quality boards.
 
 ---
 
