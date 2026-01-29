@@ -6,8 +6,8 @@ a tiny, reliable, serial‑driven netplan generator that keeps old ESP32 boards 
 But if anyone wants to take it further, here are some ideas that could be fun, useful, or completely unnecessary:
 
 ### 🧩 Practical Extensions
-- **EEPROM/Flash persistence**  
-  Save interface/IP/DNS settings so they survive reboots.
+- ~~**EEPROM/Flash persistence**~~  
+  ~~Save interface/IP/DNS settings so they survive reboots.~~-✔ Completed (autosave to NVS added 2025‑01‑29)
 
 - **Multiple profiles**  
   Switch between “home lab”, “office”, “field kit”, etc.
