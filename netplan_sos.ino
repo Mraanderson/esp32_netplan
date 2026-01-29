@@ -1,14 +1,17 @@
 /*
   netplan_sos.ino
-  ESP32 static‑IP Netplan helper with SOS heartbeat
+  ESP32 static‑IP Netplan helper with LED mode cycling
 
   Features:
     • SOS LED heartbeat (Morse code)
+    • Additional LED modes: Pulse (breathing), Blink (heartbeat)
+    • BOOT button short press cycles LED modes:
+         SOS → OFF → PULSE → OFF → BLINK → OFF → SOS → ...
+    • Long press prints YAML
     • Serial command interface for editing network fields
     • Stored configuration fields: iface, ip, cidr, gateway, dns1, dns2
-    • Autosave: all changes made with `set` are immediately written to NVS (verbose confirmation)
+    • Autosave: all changes made with `set` are immediately written to NVS
     • Netplan YAML generation for Ubuntu 24.04 LTS
-    • BOOT button: short press toggles SOS, long press prints YAML
 */
 
 #include <Preferences.h>
@@ -25,13 +28,32 @@ String dns1    = "1.1.1.1";
 String dns2    = "8.8.8.8";
 
 // -----------------------------
-// SOS LED pattern
+// LED modes
 // -----------------------------
-const int LED_PIN = 2;
-bool sosEnabled = true;
+// 0 = SOS
+// 1 = OFF
+// 2 = PULSE
+// 3 = OFF
+// 4 = BLINK
+// 5 = OFF
+int ledState = 0;
+int lastLedState = -1;
 
+const int LED_PIN = 2;
+
+// SOS engine
+bool sosEnabled = true;
 unsigned long sosTimer = 0;
 int sosStep = 0;
+
+// Pulse engine
+unsigned long pulseTimer = 0;
+int pulseValue = 0;
+int pulseDirection = 1;
+
+// Blink engine
+unsigned long blinkTimer = 0;
+bool blinkOn = false;
 
 // -----------------------------
 // BOOT button
@@ -86,11 +108,12 @@ void printMenu() {
   Serial.println("  set dns1 <addr>     - set primary DNS");
   Serial.println("  set dns2 <addr>     - set secondary DNS");
   Serial.println("  netplan             - print netplan YAML");
-  Serial.println("  sos on/off          - enable or disable SOS heartbeat");
+  Serial.println("  sos on/off          - enable or disable SOS (SOS mode only)");
   Serial.println("  help                - show this menu");
   Serial.println();
   Serial.println("BOOT button actions:");
-  Serial.println("  Short press: toggle SOS");
+  Serial.println("  Short press: cycle LED mode");
+  Serial.println("    SOS → OFF → PULSE → OFF → BLINK → OFF → SOS → ...");
   Serial.println("  Long press : print netplan YAML");
   Serial.println();
   Serial.println("Ubuntu 24.04 LTS tip:");
@@ -133,14 +156,12 @@ void printNetplan() {
 }
 
 // -----------------------------
-// SOS blink engine (original switch version, fixed)
+// SOS engine
 // -----------------------------
 void runSOS() {
   if (!sosEnabled) return;
 
   unsigned long now = millis();
-
-  // Correct timing guard
   if (now < sosTimer) return;
 
   const int shortOn = 200;
@@ -192,6 +213,35 @@ void runSOS() {
       sosStep = 0;
       break;
   }
+}
+
+// -----------------------------
+// Pulse (breathing) engine
+// -----------------------------
+void runPulse() {
+  unsigned long now = millis();
+  if (now < pulseTimer) return;
+
+  pulseTimer = now + 5; // smooth fade
+
+  pulseValue += pulseDirection;
+  if (pulseValue >= 255) pulseDirection = -1;
+  if (pulseValue <= 0)   pulseDirection = 1;
+
+  ledcWrite(0, pulseValue);
+}
+
+// -----------------------------
+// Blink engine
+// -----------------------------
+void runBlink() {
+  unsigned long now = millis();
+  if (now < blinkTimer) return;
+
+  blinkTimer = now + (blinkOn ? 100 : 900);
+  blinkOn = !blinkOn;
+
+  digitalWrite(LED_PIN, blinkOn ? HIGH : LOW);
 }
 
 // -----------------------------
@@ -265,8 +315,12 @@ void handleCommand(String input) {
 // -----------------------------
 void setup() {
   Serial.begin(115200);
+
   pinMode(LED_PIN, OUTPUT);
   pinMode(BOOT_PIN, INPUT_PULLUP);
+
+  // LEDC for pulse mode (channel configured, pin attached only when in PULSE)
+  ledcSetup(0, 5000, 8);
 
   loadConfig();
 
@@ -299,11 +353,34 @@ void loop() {
     if (duration > 800) {
       printNetplan();
     } else {
-      sosEnabled = !sosEnabled;
-      if (!sosEnabled) digitalWrite(LED_PIN, LOW);
+      ledState = (ledState + 1) % 6;
+      digitalWrite(LED_PIN, LOW);
     }
   }
 
-  // SOS engine
-  runSOS();
+  // LED mode dispatcher with LEDC attach/detach
+  if (ledState != lastLedState) {
+    // Leaving pulse mode
+    if (lastLedState == 2) {
+      ledcDetachPin(LED_PIN);
+      pinMode(LED_PIN, OUTPUT);
+      digitalWrite(LED_PIN, LOW);
+    }
+
+    // Entering pulse mode
+    if (ledState == 2) {
+      ledcAttachPin(LED_PIN, 0);
+    }
+
+    lastLedState = ledState;
+  }
+
+  switch (ledState) {
+    case 0: runSOS(); break;
+    case 1: digitalWrite(LED_PIN, LOW); break;
+    case 2: runPulse(); break;
+    case 3: digitalWrite(LED_PIN, LOW); break;
+    case 4: runBlink(); break;
+    case 5: digitalWrite(LED_PIN, LOW); break;
+  }
 }
