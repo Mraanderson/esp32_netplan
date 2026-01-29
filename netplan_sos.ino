@@ -1,52 +1,76 @@
 /*
-   ============================================================
-   SOS Static IP Helper – Ubuntu 24.04 LTS Edition
-   ============================================================
-   Features:
-     • SOS heartbeat on BLUE_LED (toggleable via serial or BOOT button)
-     • BOOT button:
-         - Short press: toggle SOS
-         - Long press: print netplan YAML
-     • Serial control panel
-     • Stored config fields (iface, IP, CIDR, gateway, DNS)
-     • Netplan YAML generator for Ubuntu 24.04 LTS
-     • Linux command reminders
-     • No WiFi/BLE (avoids brownouts)
+  netplan_sos.ino
+  ESP32 static‑IP Netplan helper with SOS heartbeat
+
+  Features:
+    • SOS LED heartbeat (Morse code)
+    • Serial command interface for editing network fields
+    • Stored configuration fields: iface, ip, cidr, gateway, dns1, dns2
+    • Autosave: all changes made with `set` are immediately written to NVS (verbose confirmation)
+    • Netplan YAML generation for Ubuntu 24.04 LTS
+    • BOOT button: short press toggles SOS, long press prints YAML
 */
 
-#define BLUE_LED 2
-#define BOOT_BUTTON 0
+#include <Preferences.h>
+Preferences prefs;
 
 // -----------------------------
-// Stored configuration
+// Configuration fields
 // -----------------------------
 String iface   = "eth0";
-String ipAddr  = "192.168.1.42";
+String ipAddr  = "192.168.1.100";
 String cidr    = "24";
 String gateway = "192.168.1.1";
-String dns1    = "8.8.8.8";
-String dns2    = "1.1.1.1";
+String dns1    = "1.1.1.1";
+String dns2    = "8.8.8.8";
 
 // -----------------------------
-// SOS blink state
+// SOS LED pattern
 // -----------------------------
-unsigned long lastBlink = 0;
-int blinkStep = 0;
+const int LED_PIN = 2;
 bool sosEnabled = true;
 
-// -----------------------------
-// Button state
-// -----------------------------
-bool buttonWasDown = false;
-unsigned long buttonDownAt = 0;
-
-const int SHORT_ON  = 250;
-const int SHORT_OFF = 250;
-const int LONG_ON   = 750;
-const int LONG_OFF  = 750;
+unsigned long sosTimer = 0;
+int sosStep = 0;
 
 // -----------------------------
-// Menu + helpers
+// BOOT button
+// -----------------------------
+const int BOOT_PIN = 0;
+unsigned long buttonDownTime = 0;
+bool buttonPressed = false;
+
+// -----------------------------
+// Load config from NVS
+// -----------------------------
+void loadConfig() {
+  prefs.begin("netplan", true);
+  iface   = prefs.getString("iface", iface);
+  ipAddr  = prefs.getString("ip", ipAddr);
+  cidr    = prefs.getString("cidr", cidr);
+  gateway = prefs.getString("gw", gateway);
+  dns1    = prefs.getString("dns1", dns1);
+  dns2    = prefs.getString("dns2", dns2);
+  prefs.end();
+}
+
+// -----------------------------
+// Save config to NVS
+// -----------------------------
+void saveConfig() {
+  prefs.begin("netplan", false);
+  prefs.putString("iface", iface);
+  prefs.putString("ip", ipAddr);
+  prefs.putString("cidr", cidr);
+  prefs.putString("gw", gateway);
+  prefs.putString("dns1", dns1);
+  prefs.putString("dns2", dns2);
+  prefs.end();
+  Serial.println("Saved to NVS.");
+}
+
+// -----------------------------
+// Welcome menu
 // -----------------------------
 void printMenu() {
   Serial.println();
@@ -77,219 +101,209 @@ void printMenu() {
   Serial.println();
 }
 
+// -----------------------------
+// Print current config
+// -----------------------------
 void showConfig() {
-  Serial.println();
-  Serial.println("Current configuration:");
-  Serial.print("  iface : "); Serial.println(iface);
-  Serial.print("  ip    : "); Serial.println(ipAddr);
-  Serial.print("  cidr  : "); Serial.println(cidr);
-  Serial.print("  gw    : "); Serial.println(gateway);
-  Serial.print("  dns1  : "); Serial.println(dns1);
-  Serial.print("  dns2  : "); Serial.println(dns2);
+  Serial.println("\nCurrent configuration:");
+  Serial.println("  iface:   " + iface);
+  Serial.println("  ip:      " + ipAddr);
+  Serial.println("  cidr:    " + cidr);
+  Serial.println("  gateway: " + gateway);
+  Serial.println("  dns1:    " + dns1);
+  Serial.println("  dns2:    " + dns2);
   Serial.println();
 }
 
+// -----------------------------
+// Generate Netplan YAML
+// -----------------------------
 void printNetplan() {
-  Serial.println();
-  Serial.println("# Ubuntu 24.04 LTS netplan template");
-  Serial.println("# Find your interface name with: ip link show");
-  Serial.println();
+  Serial.println("\n--- Netplan YAML ---");
   Serial.println("network:");
   Serial.println("  version: 2");
-  Serial.println("  renderer: networkd");
   Serial.println("  ethernets:");
-  Serial.print("    "); Serial.print(iface); Serial.println(":");
-  Serial.println("      dhcp4: no");
-  Serial.println("      addresses:");
-  Serial.print("        - "); Serial.print(ipAddr); Serial.print("/"); Serial.println(cidr);
-  Serial.print("      gateway4: "); Serial.println(gateway);
+  Serial.println("    " + iface + ":");
+  Serial.println("      dhcp4: false");
+  Serial.println("      addresses: [" + ipAddr + "/" + cidr + "]");
+  Serial.println("      gateway4: " + gateway);
   Serial.println("      nameservers:");
-  Serial.print("        addresses: ["); Serial.print(dns1); Serial.print(", "); Serial.print(dns2); Serial.println("]");
-  Serial.println();
+  Serial.println("        addresses: [" + dns1 + ", " + dns2 + "]");
+  Serial.println("---------------------\n");
 }
 
 // -----------------------------
-// Tokenizer
+// SOS blink engine (original switch version, fixed)
 // -----------------------------
-String nextToken(String &s) {
-  s.trim();
-  int idx = s.indexOf(' ');
-  if (idx == -1) {
-    String t = s;
-    s = "";
-    return t;
+void runSOS() {
+  if (!sosEnabled) return;
+
+  unsigned long now = millis();
+
+  // Correct timing guard
+  if (now < sosTimer) return;
+
+  const int shortOn = 200;
+  const int shortOff = 200;
+  const int longOn = 600;
+  const int longOff = 200;
+  const int pause = 800;
+
+  switch (sosStep) {
+    case 0: case 2: case 4:
+      digitalWrite(LED_PIN, HIGH);
+      sosTimer = now + shortOn;
+      sosStep++;
+      break;
+
+    case 1: case 3: case 5:
+      digitalWrite(LED_PIN, LOW);
+      sosTimer = now + shortOff;
+      sosStep++;
+      break;
+
+    case 6: case 8: case 10:
+      digitalWrite(LED_PIN, HIGH);
+      sosTimer = now + longOn;
+      sosStep++;
+      break;
+
+    case 7: case 9: case 11:
+      digitalWrite(LED_PIN, LOW);
+      sosTimer = now + longOff;
+      sosStep++;
+      break;
+
+    case 12: case 14: case 16:
+      digitalWrite(LED_PIN, HIGH);
+      sosTimer = now + shortOn;
+      sosStep++;
+      break;
+
+    case 13: case 15: case 17:
+      digitalWrite(LED_PIN, LOW);
+      sosTimer = now + shortOff;
+      sosStep++;
+      break;
+
+    case 18:
+      digitalWrite(LED_PIN, LOW);
+      sosTimer = now + pause;
+      sosStep = 0;
+      break;
   }
-  String t = s.substring(0, idx);
-  s = s.substring(idx + 1);
-  s.trim();
-  return t;
 }
 
 // -----------------------------
 // Serial command handler
 // -----------------------------
-void handleSerial() {
-  if (!Serial.available()) return;
+void handleCommand(String input) {
+  input.trim();
+  if (input.length() == 0) return;
 
-  String line = Serial.readStringUntil('\n');
-  line.trim();
-  if (line.length() == 0) return;
+  int spaceIndex = input.indexOf(' ');
+  String cmd = (spaceIndex == -1) ? input : input.substring(0, spaceIndex);
+  String args = (spaceIndex == -1) ? "" : input.substring(spaceIndex + 1);
 
-  String original = line;
-  String cmd = nextToken(line);
-
-  if (cmd.equalsIgnoreCase("help") || cmd.equalsIgnoreCase("menu")) {
-    printMenu();
-  }
-  else if (cmd.equalsIgnoreCase("show")) {
+  if (cmd == "show") {
     showConfig();
   }
-  else if (cmd.equalsIgnoreCase("netplan")) {
+
+  else if (cmd == "set") {
+    int space2 = args.indexOf(' ');
+    if (space2 == -1) {
+      Serial.println("Usage: set <field> <value>");
+      return;
+    }
+
+    String field = args.substring(0, space2);
+    String value = args.substring(space2 + 1);
+
+    if (field == "iface") iface = value;
+    else if (field == "ip") ipAddr = value;
+    else if (field == "cidr") cidr = value;
+    else if (field == "gw") gateway = value;
+    else if (field == "dns1") dns1 = value;
+    else if (field == "dns2") dns2 = value;
+    else {
+      Serial.println("Unknown field.");
+      return;
+    }
+
+    Serial.println("Updated.");
+    saveConfig();
+  }
+
+  else if (cmd == "netplan") {
     printNetplan();
   }
-  else if (cmd.equalsIgnoreCase("sos")) {
-    String state = nextToken(line);
-    if (state.equalsIgnoreCase("on")) {
+
+  else if (cmd == "sos") {
+    if (args == "on") {
       sosEnabled = true;
-      Serial.println("SOS heartbeat enabled.");
-    }
-    else if (state.equalsIgnoreCase("off")) {
+      Serial.println("SOS enabled.");
+    } else if (args == "off") {
       sosEnabled = false;
-      digitalWrite(BLUE_LED, LOW);
-      Serial.println("SOS heartbeat disabled for this session.");
-    }
-    else {
-      Serial.println("Usage: sos <on|off>");
-    }
-  }
-  else if (cmd.equalsIgnoreCase("set")) {
-    String field = nextToken(line);
-    String value = line;
-
-    if (field.equalsIgnoreCase("iface")) {
-      if (value.length() == 0) Serial.println("Usage: set iface <name>");
-      else { iface = value; Serial.print("iface set to: "); Serial.println(iface); }
-    }
-    else if (field.equalsIgnoreCase("ip")) {
-      if (value.length() == 0) Serial.println("Usage: set ip <addr>");
-      else { ipAddr = value; Serial.print("ip set to: "); Serial.println(ipAddr); }
-    }
-    else if (field.equalsIgnoreCase("cidr")) {
-      if (value.length() == 0) Serial.println("Usage: set cidr <n>");
-      else { cidr = value; Serial.print("cidr set to: "); Serial.println(cidr); }
-    }
-    else if (field.equalsIgnoreCase("gw")) {
-      if (value.length() == 0) Serial.println("Usage: set gw <addr>");
-      else { gateway = value; Serial.print("gateway set to: "); Serial.println(gateway); }
-    }
-    else if (field.equalsIgnoreCase("dns1")) {
-      if (value.length() == 0) Serial.println("Usage: set dns1 <addr>");
-      else { dns1 = value; Serial.print("dns1 set to: "); Serial.println(dns1); }
-    }
-    else if (field.equalsIgnoreCase("dns2")) {
-      if (value.length() == 0) Serial.println("Usage: set dns2 <addr>");
-      else { dns2 = value; Serial.print("dns2 set to: "); Serial.println(dns2); }
-    }
-    else {
-      Serial.println("Unknown field. Use: iface, ip, cidr, gw, dns1, dns2");
-    }
-  }
-  else {
-    Serial.print("Unknown command: ");
-    Serial.println(original);
-    Serial.println("Type 'help' for menu.");
-  }
-}
-
-// -----------------------------
-// BOOT button handler
-// -----------------------------
-void handleButton() {
-  bool pressed = (digitalRead(BOOT_BUTTON) == LOW);
-
-  if (pressed && !buttonWasDown) {
-    buttonDownAt = millis();
-    buttonWasDown = true;
-  }
-
-  if (!pressed && buttonWasDown) {
-    unsigned long held = millis() - buttonDownAt;
-    buttonWasDown = false;
-
-    if (held < 600) {
-      sosEnabled = !sosEnabled;
-      Serial.println(sosEnabled ? "SOS enabled (button)" : "SOS disabled (button)");
+      digitalWrite(LED_PIN, LOW);
+      Serial.println("SOS disabled.");
     } else {
-      Serial.println("Printing netplan (button long press)...");
-      printNetplan();
+      Serial.println("Usage: sos on/off");
     }
   }
-}
 
-// -----------------------------
-// SOS blink engine
-// -----------------------------
-void blinkSOS() {
-  unsigned long now = millis();
+  else if (cmd == "help") {
+    printMenu();
+  }
 
-  switch (blinkStep) {
-    case 0: case 2: case 4:
-      if (now - lastBlink >= SHORT_ON) {
-        digitalWrite(BLUE_LED, LOW);
-        lastBlink = now;
-        blinkStep++;
-      } else digitalWrite(BLUE_LED, HIGH);
-      break;
-
-    case 1: case 3: case 5:
-      if (now - lastBlink >= SHORT_OFF) {
-        lastBlink = now;
-        blinkStep++;
-      }
-      break;
-
-    case 6: case 8: case 10:
-      if (now - lastBlink >= LONG_ON) {
-        digitalWrite(BLUE_LED, LOW);
-        lastBlink = now;
-        blinkStep++;
-      } else digitalWrite(BLUE_LED, HIGH);
-      break;
-
-    case 7: case 9: case 11:
-      if (now - lastBlink >= LONG_OFF) {
-        lastBlink = now;
-        blinkStep++;
-      }
-      break;
-
-    case 12:
-      if (now - lastBlink >= 1500) {
-        blinkStep = 0;
-        lastBlink = now;
-      }
-      break;
+  else {
+    Serial.println("Unknown command.");
   }
 }
 
 // -----------------------------
-// Setup + Loop
+// Setup
 // -----------------------------
 void setup() {
-  pinMode(BLUE_LED, OUTPUT);
-  pinMode(BOOT_BUTTON, INPUT_PULLUP);
-
   Serial.begin(115200);
-  delay(10);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BOOT_PIN, INPUT_PULLUP);
 
-  Serial.println("SOS Static IP Helper – Ubuntu 24.04 LTS");
+  loadConfig();
+
+  Serial.println("\nNetplan SOS Helper Ready.");
   printMenu();
 }
 
+// -----------------------------
+// Loop
+// -----------------------------
 void loop() {
-  handleSerial();
-  handleButton();
+  // Serial input
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    handleCommand(input);
+  }
 
-  if (sosEnabled) blinkSOS();
-  else digitalWrite(BLUE_LED, LOW);
+  // Button handling
+  int state = digitalRead(BOOT_PIN);
+
+  if (state == LOW && !buttonPressed) {
+    buttonPressed = true;
+    buttonDownTime = millis();
+  }
+
+  if (state == HIGH && buttonPressed) {
+    unsigned long duration = millis() - buttonDownTime;
+    buttonPressed = false;
+
+    if (duration > 800) {
+      printNetplan();
+    } else {
+      sosEnabled = !sosEnabled;
+      if (!sosEnabled) digitalWrite(LED_PIN, LOW);
+    }
+  }
+
+  // SOS engine
+  runSOS();
 }
